@@ -215,6 +215,7 @@ td.slot.conflict-cell{background:#fff2f0}
           <button class="btn btn-sm" onclick="changeWeek(1)">下周 ›</button>
         </div>
       </div>
+      <div id="colorLegend" style="display:none;padding:8px 14px 0;flex-wrap:wrap;gap:12px;font-size:11px;color:var(--muted)"></div>
       <div id="conflictBanner"></div>
       <div class="schedule-wrap">
         <table class="schedule" id="scheduleTable"></table>
@@ -267,15 +268,22 @@ var PERIODS = [
 var DAYS = ['周一','周二','周三','周四','周五','周六','周日'];
 var MAX_WEEK = 22; // 数据中存在排课至第 21-22 周的课程
 
-// 课程颜色调色板
-var COLORS = [
-  '#1677ff','#52c41a','#722ed1','#13c2c2','#eb2f96','#fa8c16','#2f54eb',
-  '#a0d911','#36cfc9','#f5222d','#fa541c','#1890ff','#08979c','#7cb305',
-  '#9254de','#fadb14','#597ef7','#73d13d','#ff7a45','#9c27b0','#00bcd4'
-];
+// 按课程属性固定配色，共 8 种：核心课两类同色，实验/实践两类同色，其余类型回退灰色
+var ATTR_COLORS = {
+  '公共选修课': '#16a085',
+  '公共必修课': '#e67e22',
+  '学科核心课': '#2980b9',
+  '专业核心课': '#2980b9',
+  '专业课':    '#c0392b',
+  '专业选修':  '#27ae60',
+  '实验课':    '#6a89cc',
+  '实践课':    '#6a89cc',
+  '研讨课':    '#e84393'
+};
+var FALLBACK_COLOR = '#7f8c8d';
+function courseColor(c){ return ATTR_COLORS[c.attr] || FALLBACK_COLOR; }
 
 var selected = {};  // id -> course
-var colorIdx = 0;
 var currentWeek = 1;
 var STORAGE_KEY = 'cas-class-selected-v1';
 
@@ -299,14 +307,11 @@ function loadSelection(){
   if(!Array.isArray(saved)) return;
 
   selected = {};
-  colorIdx = 0;
   saved.forEach(function(rawId){
     var id = Number(rawId);
     if(!isFinite(id) || selected[id]) return;
     var c = findCourse(id);
     if(!c) return;
-    c._color = COLORS[colorIdx % COLORS.length];
-    colorIdx++;
     selected[id] = c;
   });
 }
@@ -480,8 +485,6 @@ function addCourse(id){
 function doAdd(id){
   var c = findCourse(id);
   if(!c) return;
-  c._color = COLORS[colorIdx % COLORS.length];
-  colorIdx++;
   selected[id] = c;
   saveSelection();
   doSearch();
@@ -505,7 +508,6 @@ function removeCourse(id){
 
 function clearAll(){
   selected = {};
-  colorIdx = 0;
   saveSelection();
   doSearch();
   renderSelected();
@@ -584,14 +586,11 @@ function importSelection(input){
 // 覆盖式应用导入的方案：无效 ID 跳过，方案内冲突课程直接以重叠样式呈现
 function applyImport(data){
   selected = {};
-  colorIdx = 0;
   var imported = 0, skipped = 0;
   data.selected.forEach(function(key){
     var c = resolveImportKey(key);
     if(!c){ skipped++; return; }
     if(selected[c.id]){ skipped++; return; } // 重复代号计入跳过
-    c._color = COLORS[colorIdx % COLORS.length];
-    colorIdx++;
     selected[c.id] = c;
     imported++;
   });
@@ -663,7 +662,7 @@ function renderSelected(){
   ids.forEach(function(id){
     var c = selected[id];
     html += '<div class="sel-item'+(favorites[id]?' fav':'')+'">'
-      + '<div class="color-dot" style="background:'+c._color+'"></div>'
+      + '<div class="color-dot" style="background:'+courseColor(c)+'"></div>'
       + '<div class="info">'
       +   '<div class="name">'+(favorites[id]?'<span style="color:#daa520">★ </span>':'')+esc(c.name)+'</div>'
       +   '<div class="meta">'
@@ -685,9 +684,11 @@ function updateStats(){
   var totalCredit = 0;
   var activeCount = 0;
   var byAttr = {};   // 课程属性 -> 学分合计
+  var attrSet = {};  // 当前选课涉及的属性（图例用）
   var FIXED_ATTRS = ['公共选修课','公共必修课','学科核心课','专业核心课','专业课'];
   ids.forEach(function(id){
     var c = selected[id];
+    if(c.attr) attrSet[c.attr] = 1;
     if(c.credits){
       totalCredit += c.credits;
       var a = c.attr && FIXED_ATTRS.indexOf(c.attr) >= 0 ? c.attr : '其他';
@@ -706,6 +707,21 @@ function updateStats(){
     '已选 <b>'+ids.length+'</b> 门 · 总学分 <b>'+r1(totalCredit)+'</b>'
     + (ids.length ? '（'+parts.join(' · ')+'）' : '')
     + ' · 本周 <b>'+activeCount+'</b> 个课时段';
+  renderLegend(attrSet);
+}
+
+// 属性颜色图例：仅显示当前选课涉及的类型
+function renderLegend(attrSet){
+  var el = document.getElementById('colorLegend');
+  var keys = Object.keys(attrSet);
+  if(!keys.length){ el.style.display = 'none'; el.innerHTML = ''; return; }
+  var html = '';
+  keys.forEach(function(a){
+    html += '<span style="display:inline-flex;align-items:center;gap:4px">'
+      + '<span style="width:10px;height:10px;border-radius:2px;background:'+(ATTR_COLORS[a]||FALLBACK_COLOR)+'"></span>'+a+'</span>';
+  });
+  el.innerHTML = html;
+  el.style.display = 'flex';
 }
 
 // ===== 课表表格 =====
@@ -776,7 +792,7 @@ function renderSchedule(){
         // 单课独占：保持原有整块显示
         var ws = cluster.items[0];
         html += '<td class="slot" rowspan="'+span+'">'
-          + '<div class="cell-block'+(favorites[ws.course.id]?' fav':'')+'" title="'+blockTip(ws)+'" oncontextmenu="showCtxMenu(event,'+ws.course.id+');return false" style="background:'+ws.course._color+'">'
+          + '<div class="cell-block'+(favorites[ws.course.id]?' fav':'')+'" title="'+blockTip(ws)+'" oncontextmenu="showCtxMenu(event,'+ws.course.id+');return false" style="background:'+courseColor(ws.course)+'">'
           + '<div class="cn">'+esc(ws.course.name)+'</div>'
           + '<div class="extra">'+blockExtra(ws)+'</div>'
           + '</div></td>';
@@ -792,8 +808,8 @@ function renderSchedule(){
           var hPct = ((ws.e - ws.s + 1) / span) * 100;
           var leftPct = (laneArr.lane[idx] * laneW).toFixed(2);
           inner += '<div class="cell-block overlap'+(favorites[ws.course.id]?' fav':'')+'" title="'+blockTip(ws)+'" oncontextmenu="showCtxMenu(event,'+ws.course.id+');return false" style="'
-            + 'background:'+hexA(ws.course._color, .82)+';'
-            + 'border:1px solid '+ws.course._color+';'
+            + 'background:'+hexA(courseColor(ws.course), .82)+';'
+            + 'border:1px solid '+courseColor(ws.course)+';'
             + 'top:'+topPct.toFixed(2)+'%;height:'+hPct.toFixed(2)+'%;'
             + 'left:'+leftPct+'%;width:'+laneW.toFixed(2)+'%">'
             + '<div class="cn">'+esc(ws.course.name)+'</div>'
