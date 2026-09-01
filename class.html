@@ -53,6 +53,7 @@ body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:var(--bg)
 .tag-level{background:#f6ffed;color:#52c41a}
 .tag-credit{background:#fff7e6;color:#d48806}
 .tag-exam{background:#f9f0ff;color:#722ed1}
+.tag-teacher{background:#e6fffb;color:#08979c}
 .sess-line{color:#555;line-height:1.5}
 /* Selected */
 .sel-item{padding:8px 12px;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -157,7 +158,7 @@ td.slot.conflict-cell{background:#fff2f0}
         <button class="btn btn-sm btn-danger" onclick="clearAll()">清空</button>
       </div>
       <div class="card-body" style="padding:0">
-        <div id="selectedList" style="max-height:240px;overflow-y:auto">
+        <div id="selectedList">
           <div style="padding:16px;color:var(--muted);text-align:center;font-size:13px">尚未选择任何课程</div>
         </div>
       </div>
@@ -332,7 +333,8 @@ function doSearch(){
     if(kw){
       var name = (c.name||'').toLowerCase();
       var code = (c.code||'').toLowerCase();
-      if(name.indexOf(kw)<0 && code.indexOf(kw)<0) continue;
+      var teacher = courseTeachers(c).toLowerCase();
+      if(name.indexOf(kw)<0 && code.indexOf(kw)<0 && teacher.indexOf(kw)<0) continue;
     }
     results.push(c);
     if(results.length>=200) break;
@@ -356,10 +358,12 @@ function renderList(results){
     var conflictCnt = selected[c.id] ? 0 : checkConflicts(c, selected).length;
     var btnCls = selected[c.id] ? 'btn btn-sm' : (conflictCnt ? 'btn btn-sm btn-warn' : 'btn btn-sm btn-primary');
     var btnTxt = selected[c.id] ? '已添加' : (conflictCnt ? '冲突添加' : '添加');
+    var teachers = courseTeachers(c);
     html += '<div class="course-item">'
       + '<div class="info">'
       +   '<div class="name">'+esc(c.name)+'</div>'
       +   '<div class="meta">'
+      +     (teachers?'<span class="tag tag-teacher">'+esc(teachers)+'</span>':'')
       +     '<span class="tag tag-attr">'+esc(c.attr||'')+'</span>'
       +     '<span class="tag tag-level">'+esc(c.level||'')+'</span>'
       +     (c.credits!=null?'<span class="tag tag-credit">'+c.credits+'学分</span>':'')
@@ -488,7 +492,12 @@ function renderSelected(){
       + '<div class="color-dot" style="background:'+c._color+'"></div>'
       + '<div class="info">'
       +   '<div class="name">'+esc(c.name)+'</div>'
-      +   '<div class="meta">'+(c.credits!=null?c.credits+'学分 · ':'')+esc(c.attr)+'<br>'+courseSessionsDesc(c)+'</div>'
+      +   '<div class="meta">'
+      +     '<span class="tag tag-attr">'+esc(c.attr||'')+'</span>'
+      +     (c.credits!=null?'<span class="tag tag-credit">'+c.credits+'学分</span>':'')
+      +     (c.exam?'<span class="tag tag-exam">'+esc(c.exam)+'</span>':'')
+      +   '</div>'
+      +   '<div class="meta sess-line">'+courseSessionsDesc(c)+'</div>'
       + '</div>'
       + '<button class="btn btn-sm btn-danger" onclick="removeCourse('+id+')">移除</button>'
       + '</div>';
@@ -581,9 +590,9 @@ function renderSchedule(){
         // 单课独占：保持原有整块显示
         var ws = cluster.items[0];
         html += '<td class="slot" rowspan="'+span+'">'
-          + '<div class="cell-block" oncontextmenu="showCtxMenu(event,'+ws.course.id+');return false" style="background:'+ws.course._color+'">'
+          + '<div class="cell-block" title="'+blockTip(ws)+'" oncontextmenu="showCtxMenu(event,'+ws.course.id+');return false" style="background:'+ws.course._color+'">'
           + '<div class="cn">'+esc(ws.course.name)+'</div>'
-          + '<div class="extra">'+esc(ws.session.teacher||'')+(ws.session.room?' · '+esc(ws.session.room):'')+'<br>第'+ws.s+'-'+ws.e+'节</div>'
+          + '<div class="extra">'+blockExtra(ws)+'</div>'
           + '</div></td>';
       } else {
         // 冲突簇：整簇一个 rowspan 单元格，各课程块半透明重叠、按车道并排错位
@@ -596,13 +605,13 @@ function renderSchedule(){
           var topPct = ((ws.s - cluster.s) / span) * 100;
           var hPct = ((ws.e - ws.s + 1) / span) * 100;
           var leftPct = (laneArr.lane[idx] * laneW).toFixed(2);
-          inner += '<div class="cell-block overlap" oncontextmenu="showCtxMenu(event,'+ws.course.id+');return false" style="'
+          inner += '<div class="cell-block overlap" title="'+blockTip(ws)+'" oncontextmenu="showCtxMenu(event,'+ws.course.id+');return false" style="'
             + 'background:'+hexA(ws.course._color, .82)+';'
             + 'border:1px solid '+ws.course._color+';'
             + 'top:'+topPct.toFixed(2)+'%;height:'+hPct.toFixed(2)+'%;'
             + 'left:'+leftPct+'%;width:'+laneW.toFixed(2)+'%">'
             + '<div class="cn">'+esc(ws.course.name)+'</div>'
-            + '<div class="extra">'+esc(ws.session.teacher||'')+(ws.session.room?' · '+esc(ws.session.room):'')+'<br>第'+ws.s+'-'+ws.e+'节</div>'
+            + '<div class="extra">'+blockExtra(ws)+'</div>'
             + '</div>';
         });
         weekConflictNames[Object.keys(names).join(' / ')] = 1;
@@ -794,6 +803,34 @@ function sessionDesc(s){
 // 课程全部时段描述，多时段用"；"分隔："周三1-3节(2-5,7-16周)；周五1-3节(11-16周)"
 function courseSessionsDesc(c){
   return c.sessions.map(sessionDesc).join('；');
+}
+
+// 课程所有时段的教师去重列表："张三/李四"
+function courseTeachers(c){
+  var seen = {}, list = [];
+  c.sessions.forEach(function(s){
+    var t = (s.teacher||'').trim();
+    if(t && !seen[t]){ seen[t]=1; list.push(t); }
+  });
+  return list.join('/');
+}
+
+// 课表课程块的信息行：教师 · 教室 / 节次 · 考核方式
+function blockExtra(ws){
+  return esc(ws.session.teacher||'')
+    + (ws.session.room?' · '+esc(ws.session.room):'')
+    + '<br>第'+ws.s+'-'+ws.e+'节'
+    + (ws.course.exam?' · '+esc(ws.course.exam):'');
+}
+
+// 课表课程块悬停提示（窄块文字被截断时可悬停查看完整信息）
+function blockTip(ws){
+  var parts = [];
+  if(ws.course.exam) parts.push(ws.course.exam);
+  if(ws.session.teacher) parts.push(ws.session.teacher);
+  if(ws.session.room) parts.push(ws.session.room);
+  parts.push('第'+ws.s+'-'+ws.e+'节');
+  return esc(parts.join(' · '));
 }
 
 // 启动
