@@ -36,6 +36,8 @@ body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:var(--bg)
 .btn:hover{background:#f5f5f5}
 .btn-primary{background:var(--primary);color:#fff;border-color:var(--primary)}
 .btn-primary:hover{background:#0958d9}
+.btn-warn{background:#fa8c16;color:#fff;border-color:#fa8c16}
+.btn-warn:hover{background:#d46b08}
 .btn-sm{padding:3px 10px;font-size:12px}
 .btn-danger{color:var(--danger);border-color:#ffccc7}
 .btn-danger:hover{background:#fff1f0}
@@ -74,7 +76,7 @@ table.schedule td.slot{padding:2px;vertical-align:top;position:relative;height:5
 .cell-block{padding:4px 6px;height:100%;border-radius:3px;color:#fff;font-size:11px;line-height:1.4;text-align:left;cursor:default;overflow:hidden;box-sizing:border-box;display:flex;flex-direction:column}
 .cell-block .cn{font-weight:600;font-size:12px}
 .cell-block .extra{opacity:.85;font-size:10px;margin-top:auto;padding-top:4px}
-.cell-block.conflict{border:2px solid var(--danger)}
+.cell-block.overlap{position:absolute;z-index:1;box-shadow:inset 0 0 0 1px rgba(255,255,255,.4)}
 td.slot.conflict-cell{background:#fff2f0}
 .empty-cell{color:var(--muted);font-size:11px;padding:4px}
 /* Conflict banner */
@@ -96,6 +98,16 @@ td.slot.conflict-cell{background:#fff2f0}
 .modal p{margin-bottom:12px;font-size:13px;line-height:1.6}
 .modal .conflict-detail{background:#fff2f0;border:1px solid #ffccc7;border-radius:4px;padding:8px;margin-bottom:12px;font-size:12px;max-height:200px;overflow-y:auto}
 .modal .modal-actions{display:flex;gap:8px;justify-content:flex-end}
+/* Context menu (课表课程块右键) */
+.ctx-menu{position:fixed;background:#fff;border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 16px rgba(0,0,0,.15);z-index:200;min-width:160px;padding:4px 0;display:none}
+.ctx-menu.show{display:block}
+.ctx-title{padding:7px 14px 5px;font-size:12px;color:var(--muted);border-bottom:1px solid #f0f0f0;margin-bottom:4px;max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ctx-item{padding:7px 14px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px}
+.ctx-item:hover{background:#f5f5f5}
+.ctx-item.danger{color:var(--danger)}
+/* Toast */
+.toast{position:fixed;left:50%;bottom:32px;transform:translateX(-50%) translateY(16px);background:rgba(0,0,0,.78);color:#fff;padding:8px 16px;border-radius:6px;font-size:13px;opacity:0;pointer-events:none;transition:.25s;z-index:300}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 /* Responsive */
 @media(max-width:1100px){
   .container{flex-direction:column}
@@ -108,7 +120,7 @@ td.slot.conflict-cell{background:#fff2f0}
 <div class="header">
   <div>
     <h1>国科大 2026秋季学期 模拟选课</h1>
-    <div class="sub">选择课程 · 检测冲突 · 按周生成课表（1-20周）</div>
+    <div class="sub">选择课程 · 冲突预警可强行添加 · 按周生成课表（1-22周）</div>
   </div>
   <div class="stats" id="stats" style="color:#fff"></div>
 </div>
@@ -177,13 +189,24 @@ td.slot.conflict-cell{background:#fff2f0}
 <div class="modal-overlay" id="conflictModal">
   <div class="modal">
     <h3>⚠ 时间冲突</h3>
-    <p>该课程与已选课程存在时间冲突，无法添加：</p>
+    <p>该课程与已选课程存在时间冲突，仍可强行添加，冲突时段将在课表中以红色标注：</p>
     <div class="conflict-detail" id="conflictDetail"></div>
     <div class="modal-actions">
-      <button class="btn" onclick="closeModal()">知道了</button>
+      <button class="btn" onclick="closeModal()">取消</button>
+      <button class="btn btn-warn" onclick="confirmConflictAdd()">仍要添加</button>
     </div>
   </div>
 </div>
+
+<!-- 课表课程块右键菜单 -->
+<div class="ctx-menu" id="ctxMenu">
+  <div class="ctx-title" id="ctxTitle"></div>
+  <div class="ctx-item" onclick="ctxCopyCode()">📋 复制课程代码</div>
+  <div class="ctx-item danger" onclick="ctxRemove()">✕ 移除该课程</div>
+</div>
+
+<!-- 复制成功提示 -->
+<div class="toast" id="toast"></div>
 
 <script>
 // ===== 时间定义（13节次） =====
@@ -203,7 +226,7 @@ var PERIODS = [
   {n:13, t:'22:00-22:50'}
 ];
 var DAYS = ['周一','周二','周三','周四','周五','周六','周日'];
-var MAX_WEEK = 20;
+var MAX_WEEK = 22; // 数据中存在排课至第 21-22 周的课程
 
 // 课程颜色调色板
 var COLORS = [
@@ -270,6 +293,15 @@ function init(){
   }
   wb.innerHTML = html;
 
+  // 右键菜单关闭时机：点击任意处、在课程块外右键、窗口缩放、滚动、Esc
+  document.addEventListener('click', hideCtxMenu);
+  document.addEventListener('contextmenu', function(e){
+    if(!(e.target && e.target.closest && e.target.closest('.cell-block'))) hideCtxMenu();
+  });
+  window.addEventListener('resize', hideCtxMenu);
+  window.addEventListener('scroll', hideCtxMenu, true); // 捕获阶段，覆盖内部滚动容器
+  document.addEventListener('keydown', function(e){ if(e.key === 'Escape') hideCtxMenu(); });
+
   loadSelection();
   renderSelected();
   doSearch();
@@ -320,9 +352,10 @@ function resetFilters(){
 function renderList(results){
   var html = '';
   results.forEach(function(c){
-    var added = selected[c.id] ? '已添加' : '添加';
-    var btnDis = selected[c.id] ? 'disabled' : '';
-    var btnCls = selected[c.id] ? 'btn btn-sm' : 'btn btn-sm btn-primary';
+    // 冲突预警：与已选课程时间冲突的课程以橙色按钮 + 红色标签提示，但仍可添加
+    var conflictCnt = selected[c.id] ? 0 : checkConflicts(c, selected).length;
+    var btnCls = selected[c.id] ? 'btn btn-sm' : (conflictCnt ? 'btn btn-sm btn-warn' : 'btn btn-sm btn-primary');
+    var btnTxt = selected[c.id] ? '已添加' : (conflictCnt ? '冲突添加' : '添加');
     html += '<div class="course-item">'
       + '<div class="info">'
       +   '<div class="name">'+esc(c.name)+'</div>'
@@ -331,11 +364,12 @@ function renderList(results){
       +     '<span class="tag tag-level">'+esc(c.level||'')+'</span>'
       +     (c.credits!=null?'<span class="tag tag-credit">'+c.credits+'学分</span>':'')
       +     (c.exam?'<span class="tag tag-exam">'+esc(c.exam)+'</span>':'')
+      +     (conflictCnt?'<span class="tag" style="background:#fff1f0;color:#ff4d4f">与'+conflictCnt+'门冲突</span>':'')
       +     ' '+esc(c.code)+' · '+esc(c.dept)
       +   '</div>'
       +   '<div class="meta sess-line">'+courseSessionsDesc(c)+'</div>'
       + '</div>'
-      + '<button class="'+btnCls+'" '+btnDis+' onclick="addCourse('+c.id+')">'+added+'</button>'
+      + '<button class="'+btnCls+'" onclick="addCourse('+c.id+')">'+btnTxt+'</button>'
       + '</div>';
   });
   if(!results.length){
@@ -345,15 +379,24 @@ function renderList(results){
 }
 
 // ===== 选课 =====
+var pendingConflictId = null; // 冲突确认弹窗中待添加的课程
+
 function addCourse(id){
   var c = findCourse(id);
   if(!c) return;
-  // 冲突检测
+  // 冲突检测：有冲突时弹窗确认，允许强行添加
   var conflicts = checkConflicts(c, selected);
   if(conflicts.length){
+    pendingConflictId = id;
     showConflictModal(c, conflicts);
     return;
   }
+  doAdd(id);
+}
+
+function doAdd(id){
+  var c = findCourse(id);
+  if(!c) return;
   c._color = COLORS[colorIdx % COLORS.length];
   colorIdx++;
   selected[id] = c;
@@ -361,6 +404,12 @@ function addCourse(id){
   doSearch();
   renderSelected();
   renderSchedule();
+}
+
+function confirmConflictAdd(){
+  if(pendingConflictId != null) doAdd(pendingConflictId);
+  pendingConflictId = null;
+  closeModal();
 }
 
 function removeCourse(id){
@@ -465,7 +514,8 @@ function updateStats(){
 }
 
 // ===== 课表表格 =====
-// renderSchedule 负责构建整个表格（含表头），用 rowspan 让连续节次的课程覆盖多个方格
+// renderSchedule 负责构建整个表格（含表头）：无冲突的课程用 rowspan 覆盖连续节次；
+// 同一天内节次相交的课程归为一簇，整簇占一个 rowspan 单元格，簇内各课程块半透明重叠显示
 function renderSchedule(){
   // 1. 收集本周所有 session（一门课可能多个时段，每个 session 独立处理）
   var weekSess = [];
@@ -477,85 +527,88 @@ function renderSchedule(){
     });
   }
 
-  // 2. 构建节次占用图 occupied[d][p] = [session...]
-  var occupied = {};
-  for(var d=1; d<=7; d++) occupied[d] = {};
-  weekSess.forEach(function(ws){
-    for(var p=ws.s; p<=ws.e; p++){
-      if(!occupied[ws.d][p]) occupied[ws.d][p] = [];
-      occupied[ws.d][p].push(ws);
-    }
-  });
-
-  // 3. 判断 session 是否在其整个跨度内都无冲突（每节只被它自己占用）
-  function canSpan(ws){
-    for(var p=ws.s; p<=ws.e; p++){
-      var cell = occupied[ws.d][p];
-      if(!cell || cell.length !== 1 || cell[0] !== ws) return false;
-    }
-    return true;
+  // 2. 按天聚类：节次区间相交（传递闭包）的 session 归为一簇
+  var clustersByDay = {};
+  for(var d=1; d<=7; d++) clustersByDay[d] = [];
+  for(var d=1; d<=7; d++){
+    var list = weekSess.filter(function(ws){ return ws.d === d; });
+    list.sort(function(a,b){ return a.s - b.s || b.e - a.e; });
+    var cur = null;
+    list.forEach(function(ws){
+      if(cur && ws.s <= cur.e){
+        cur.items.push(ws);
+        if(ws.e > cur.e) cur.e = ws.e;
+      }else{
+        cur = {s:ws.s, e:ws.e, items:[ws]};
+        clustersByDay[d].push(cur);
+      }
+    });
   }
 
-  // 4. skip[d][p] 标记被 rowspan 覆盖而需跳过的格子
+  // 3. skip[d][p] 标记被 rowspan 覆盖而需跳过的格子
   var skip = {};
   for(var d=1; d<=7; d++) skip[d] = {};
 
-  // 5. 收集本周冲突信息（用于 banner）
+  // 4. 收集本周冲突信息（用于 banner）
   var weekConflictNames = {};
 
-  // 6. 构建 tbody
+  // 5. 构建 tbody
   var html = '<thead><tr><th class="time-col">节次/时间</th>';
   DAYS.forEach(function(d){ html += '<th>'+d+'</th>'; });
   html += '</tr></thead><tbody>';
+
+  var ROW_H = 50; // 单节行高(px)，与 CSS 中 td.slot 的行高保持一致
 
   for(var p=1; p<=13; p++){
     html += '<tr><td class="time-col"><span class="p">第'+p+'节</span><br>'+PERIODS[p-1].t+'</td>';
     for(var d=1; d<=7; d++){
       if(skip[d][p]) continue; // 已被上方 rowspan 覆盖，跳过该 td
-      var cell = occupied[d][p];
-      if(!cell || cell.length === 0){
+      // 找到从当前节次开始的簇
+      var cluster = null;
+      var clusters = clustersByDay[d];
+      for(var ci=0; ci<clusters.length; ci++){
+        if(clusters[ci].s === p){ cluster = clusters[ci]; break; }
+      }
+      if(!cluster){
         // 空格
         html += '<td class="slot"><div class="empty-cell"></div></td>';
-      } else if(cell.length > 1){
-        // 该节次被多个 session 占用 → 冲突格
-        var names = {};
-        cell.forEach(function(ws){ names[ws.course.name]=1; });
-        var nameList = Object.keys(names);
-        weekConflictNames[nameList.join(' / ')] = 1;
-        html += '<td class="slot conflict-cell">'
-          + '<div class="cell-block conflict" style="background:'+cell[0].course._color+'">'
-          + '<div class="cn">⚠ 冲突</div>'
-          + '<div class="extra">'+nameList.length+'门课 · 第'+p+'节</div>'
+        continue;
+      }
+      var span = cluster.e - cluster.s + 1;
+      for(var pp=p+1; pp<=cluster.e; pp++) skip[d][pp] = true;
+
+      if(cluster.items.length === 1){
+        // 单课独占：保持原有整块显示
+        var ws = cluster.items[0];
+        html += '<td class="slot" rowspan="'+span+'">'
+          + '<div class="cell-block" oncontextmenu="showCtxMenu(event,'+ws.course.id+');return false" style="background:'+ws.course._color+'">'
+          + '<div class="cn">'+esc(ws.course.name)+'</div>'
+          + '<div class="extra">'+esc(ws.session.teacher||'')+(ws.session.room?' · '+esc(ws.session.room):'')+'<br>第'+ws.s+'-'+ws.e+'节</div>'
           + '</div></td>';
       } else {
-        // 该节次只有一个 session
-        var ws = cell[0];
-        if(p === ws.s && canSpan(ws)){
-          // 起始节且全程无冲突 → rowspan 覆盖连续多个方格
-          var span = ws.e - ws.s + 1;
-          html += '<td class="slot" rowspan="'+span+'">'
-            + '<div class="cell-block" style="background:'+ws.course._color+'">'
+        // 冲突簇：整簇一个 rowspan 单元格，各课程块半透明重叠、按车道并排错位
+        var laneArr = assignLanes(cluster.items);
+        var laneW = 100 / laneArr.max;
+        var names = {};
+        var inner = '';
+        cluster.items.forEach(function(ws, idx){
+          names[ws.course.name] = 1;
+          var topPct = ((ws.s - cluster.s) / span) * 100;
+          var hPct = ((ws.e - ws.s + 1) / span) * 100;
+          var leftPct = (laneArr.lane[idx] * laneW).toFixed(2);
+          inner += '<div class="cell-block overlap" oncontextmenu="showCtxMenu(event,'+ws.course.id+');return false" style="'
+            + 'background:'+hexA(ws.course._color, .82)+';'
+            + 'border:1px solid '+ws.course._color+';'
+            + 'top:'+topPct.toFixed(2)+'%;height:'+hPct.toFixed(2)+'%;'
+            + 'left:'+leftPct+'%;width:'+laneW.toFixed(2)+'%">'
             + '<div class="cn">'+esc(ws.course.name)+'</div>'
             + '<div class="extra">'+esc(ws.session.teacher||'')+(ws.session.room?' · '+esc(ws.session.room):'')+'<br>第'+ws.s+'-'+ws.e+'节</div>'
-            + '</div></td>';
-          for(var pp=p+1; pp<=ws.e; pp++) skip[d][pp] = true;
-        } else {
-          // session 与其他 session 部分重叠（冲突），不能 rowspan → 单格标红显示
-          var otherNames = {};
-          for(var pp2=ws.s; pp2<=ws.e; pp2++){
-            var cc = occupied[d][pp2];
-            if(cc && cc.length > 1){
-              cc.forEach(function(x){ if(x !== ws) otherNames[x.course.name]=1; });
-            }
-          }
-          var otherList = Object.keys(otherNames);
-          weekConflictNames[ws.course.name + ' 与 ' + otherList.join('/')] = 1;
-          html += '<td class="slot conflict-cell">'
-            + '<div class="cell-block conflict" style="background:'+ws.course._color+'">'
-            + '<div class="cn">'+esc(ws.course.name)+'</div>'
-            + '<div class="extra">⚠ 冲突: '+otherList.join('/')+'</div>'
-            + '</div></td>';
-        }
+            + '</div>';
+        });
+        weekConflictNames[Object.keys(names).join(' / ')] = 1;
+        html += '<td class="slot conflict-cell" rowspan="'+span+'"'
+          + ' style="position:relative;height:'+(span*ROW_H)+'px">'
+          + inner + '</td>';
       }
     }
     html += '</tr>';
@@ -574,6 +627,33 @@ function renderSchedule(){
   }
 
   updateStats();
+}
+
+// 簇内车道分配：节次重叠的课程块分到不同车道并排显示，空闲车道可复用
+// 返回 {lane:[各块车道号], max:车道总数}
+function assignLanes(items){
+  var laneEnds = [];   // 每条车道当前占用的结束节次
+  var laneOf = [];
+  items.forEach(function(ws){
+    var placed = -1;
+    for(var i=0; i<laneEnds.length; i++){
+      if(ws.s > laneEnds[i]){ placed = i; break; }
+    }
+    if(placed >= 0){
+      laneEnds[placed] = ws.e;
+      laneOf.push(placed);
+    }else{
+      laneOf.push(laneEnds.length);
+      laneEnds.push(ws.e);
+    }
+  });
+  return {lane: laneOf, max: laneEnds.length};
+}
+
+// hex 颜色 → 半透明 rgba
+function hexA(hex, a){
+  var h = hex.replace('#','');
+  return 'rgba('+parseInt(h.substr(0,2),16)+','+parseInt(h.substr(2,2),16)+','+parseInt(h.substr(4,2),16)+','+a+')';
 }
 
 // ===== 周切换 =====
@@ -612,6 +692,72 @@ function showConflictModal(course, conflicts){
 
 function closeModal(){
   document.getElementById('conflictModal').classList.remove('show');
+  pendingConflictId = null; // 取消时清除待添加课程
+}
+
+// ===== 右键菜单 =====
+var ctxCourseId = null;
+
+function showCtxMenu(e, courseId){
+  e.preventDefault();
+  e.stopPropagation();
+  ctxCourseId = courseId;
+  var c = findCourse(courseId);
+  document.getElementById('ctxTitle').textContent = c ? c.name : '';
+  var menu = document.getElementById('ctxMenu');
+  menu.classList.add('show');
+  // 定位到鼠标处，超出视口时向内收
+  var x = e.clientX, y = e.clientY;
+  if(x + menu.offsetWidth > window.innerWidth)  x = window.innerWidth  - menu.offsetWidth - 4;
+  if(y + menu.offsetHeight > window.innerHeight) y = window.innerHeight - menu.offsetHeight - 4;
+  menu.style.left = x+'px';
+  menu.style.top = y+'px';
+}
+
+function hideCtxMenu(){
+  document.getElementById('ctxMenu').classList.remove('show');
+}
+
+function ctxCopyCode(){
+  var c = findCourse(ctxCourseId);
+  if(c){
+    copyText(c.code);
+    showToast('已复制：'+c.code);
+  }
+  hideCtxMenu();
+}
+
+function ctxRemove(){
+  if(ctxCourseId != null) removeCourse(ctxCourseId);
+  hideCtxMenu();
+}
+
+function copyText(text){
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).catch(function(){ fallbackCopy(text); });
+  }else{
+    fallbackCopy(text);
+  }
+}
+
+// 剪贴板 API 不可用时的兜底（隐藏 textarea + execCommand）
+function fallbackCopy(text){
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try{ document.execCommand('copy'); }catch(e){}
+  document.body.removeChild(ta);
+}
+
+function showToast(msg){
+  var el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(el._t);
+  el._t = setTimeout(function(){ el.classList.remove('show'); }, 1600);
 }
 
 // ===== Utils =====

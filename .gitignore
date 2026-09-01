@@ -1,0 +1,5 @@
+/.omc
+
+# 本地私有日志，不入库
+/log.md
+/git-log.md
