@@ -78,6 +78,32 @@ table.schedule td.slot{padding:2px;vertical-align:top;position:relative;height:5
 .cell-block .cn{font-weight:600;font-size:12px}
 .cell-block .extra{opacity:.85;font-size:10px;margin-top:auto;padding-top:4px}
 .cell-block.overlap{position:absolute;z-index:1;box-shadow:inset 0 0 0 1px rgba(255,255,255,.4)}
+/* 收藏偏好：流动金色描边（不支持 @property 的浏览器退化为静态金环） */
+@property --fav-angle{syntax:'<angle>';inherits:false;initial-value:0deg}
+@keyframes favFlow{to{--fav-angle:360deg}}
+.cell-block.fav{position:relative;box-shadow:0 0 8px rgba(255,215,0,.75)}
+.cell-block.fav::after{
+  content:'';position:absolute;inset:0;border-radius:3px;padding:3px;z-index:2;
+  background:conic-gradient(from var(--fav-angle),#ffd700 0%,#fff3b0 25%,#daa520 50%,#fff8d0 75%,#ffd700 100%);
+  -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+  -webkit-mask-composite:xor;
+          mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+          mask-composite:exclude;
+  pointer-events:none;
+  animation:favFlow 3s linear infinite;
+}
+/* 已选列表收藏态：同款流动金环 + 金星标识 */
+.sel-item.fav{position:relative;margin:4px 6px;border-radius:6px;box-shadow:0 0 8px rgba(255,215,0,.55)}
+.sel-item.fav::after{
+  content:'';position:absolute;inset:0;border-radius:6px;padding:2px;z-index:2;
+  background:conic-gradient(from var(--fav-angle),#ffd700 0%,#fff3b0 25%,#daa520 50%,#fff8d0 75%,#ffd700 100%);
+  -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+  -webkit-mask-composite:xor;
+          mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+          mask-composite:exclude;
+  pointer-events:none;
+  animation:favFlow 3s linear infinite;
+}
 td.slot.conflict-cell{background:#fff2f0}
 .empty-cell{color:var(--muted);font-size:11px;padding:4px}
 /* Conflict banner */
@@ -145,6 +171,12 @@ td.slot.conflict-cell{background:#fff2f0}
           <select id="filterLevel" onchange="doSearch()">
             <option value="">全部层次</option>
           </select>
+          <select id="filterCredit" onchange="doSearch()">
+            <option value="">全部学分</option>
+          </select>
+          <select id="filterExam" onchange="doSearch()">
+            <option value="">全部考核</option>
+          </select>
           <button class="btn btn-sm" onclick="resetFilters()">重置</button>
         </div>
         <div style="font-size:11px;color:var(--muted);margin-bottom:6px" id="resultCount"></div>
@@ -203,6 +235,7 @@ td.slot.conflict-cell{background:#fff2f0}
 <div class="ctx-menu" id="ctxMenu">
   <div class="ctx-title" id="ctxTitle"></div>
   <div class="ctx-item" onclick="ctxCopyCode()">📋 复制课程代码</div>
+  <div class="ctx-item" id="ctxFavItem" onclick="ctxToggleFav()">★ 收藏偏好</div>
   <div class="ctx-item danger" onclick="ctxRemove()">✕ 移除该课程</div>
 </div>
 
@@ -273,18 +306,52 @@ function loadSelection(){
   });
 }
 
+// ===== 收藏偏好 =====
+var FAV_KEY = 'cas-class-fav-v1';
+var favorites = {};   // id -> 1，独立于选课持久化（移除课程不丢收藏）
+
+function saveFavorites(){
+  try{
+    localStorage.setItem(FAV_KEY, JSON.stringify(Object.keys(favorites).map(Number)));
+  }catch(e){}
+}
+
+function loadFavorites(){
+  try{
+    var saved = JSON.parse(localStorage.getItem(FAV_KEY) || '[]');
+    if(!Array.isArray(saved)) return;
+    favorites = {};
+    saved.forEach(function(rawId){
+      var id = Number(rawId);
+      if(isFinite(id)) favorites[id] = 1;
+    });
+  }catch(e){}
+}
+
+function toggleFavorite(id){
+  if(favorites[id]){ delete favorites[id]; }
+  else{ favorites[id] = 1; }
+  saveFavorites();
+  renderSchedule();
+  renderSelected();
+}
+
 // ===== 初始化 =====
 function init(){
   // 填充筛选器
-  var depts = {}, attrs = {}, levels = {};
+  var depts = {}, attrs = {}, levels = {}, credits = {}, exams = {};
   COURSES.forEach(function(c){
     if(c.dept) depts[c.dept]=1;
     if(c.attr) attrs[c.attr]=1;
     if(c.level) levels[c.level]=1;
+    if(c.credits!=null) credits[c.credits]=1;
+    if(c.exam) exams[c.exam]=1;
   });
   fillSelect('filterDept', Object.keys(depts).sort());
   fillSelect('filterAttr', Object.keys(attrs).sort());
   fillSelect('filterLevel', Object.keys(levels).sort());
+  fillSelect('filterCredit', Object.keys(credits).map(Number).sort(function(a,b){ return a-b; }));
+  fillSelect('filterExam', Object.keys(exams).sort());
 
   // 周按钮
   var wb = document.getElementById('weekButtons');
@@ -304,6 +371,7 @@ function init(){
   document.addEventListener('keydown', function(e){ if(e.key === 'Escape') hideCtxMenu(); });
 
   loadSelection();
+  loadFavorites();
   renderSelected();
   doSearch();
   renderSchedule();
@@ -324,12 +392,16 @@ function doSearch(){
   var dept = document.getElementById('filterDept').value;
   var attr = document.getElementById('filterAttr').value;
   var level = document.getElementById('filterLevel').value;
+  var credit = document.getElementById('filterCredit').value;
+  var exam = document.getElementById('filterExam').value;
   var results = [];
   for(var i=0; i<COURSES.length; i++){
     var c = COURSES[i];
     if(dept && c.dept!==dept) continue;
     if(attr && c.attr!==attr) continue;
     if(level && c.level!==level) continue;
+    if(credit && c.credits !== Number(credit)) continue;
+    if(exam && c.exam!==exam) continue;
     if(kw){
       var name = (c.name||'').toLowerCase();
       var code = (c.code||'').toLowerCase();
@@ -348,6 +420,8 @@ function resetFilters(){
   document.getElementById('filterDept').value='';
   document.getElementById('filterAttr').value='';
   document.getElementById('filterLevel').value='';
+  document.getElementById('filterCredit').value='';
+  document.getElementById('filterExam').value='';
   doSearch();
 }
 
@@ -488,10 +562,10 @@ function renderSelected(){
   var html = '';
   ids.forEach(function(id){
     var c = selected[id];
-    html += '<div class="sel-item">'
+    html += '<div class="sel-item'+(favorites[id]?' fav':'')+'">'
       + '<div class="color-dot" style="background:'+c._color+'"></div>'
       + '<div class="info">'
-      +   '<div class="name">'+esc(c.name)+'</div>'
+      +   '<div class="name">'+(favorites[id]?'<span style="color:#daa520">★ </span>':'')+esc(c.name)+'</div>'
       +   '<div class="meta">'
       +     '<span class="tag tag-attr">'+esc(c.attr||'')+'</span>'
       +     (c.credits!=null?'<span class="tag tag-credit">'+c.credits+'学分</span>':'')
@@ -510,16 +584,28 @@ function updateStats(){
   var ids = Object.keys(selected);
   var totalCredit = 0;
   var activeCount = 0;
+  var byAttr = {};   // 课程属性 -> 学分合计
+  var FIXED_ATTRS = ['公共选修课','公共必修课','学科核心课','专业核心课','专业课'];
   ids.forEach(function(id){
     var c = selected[id];
-    if(c.credits) totalCredit += c.credits;
+    if(c.credits){
+      totalCredit += c.credits;
+      var a = c.attr && FIXED_ATTRS.indexOf(c.attr) >= 0 ? c.attr : '其他';
+      byAttr[a] = (byAttr[a]||0) + c.credits;
+    }
     // 是否在当前周有课
     c.sessions.forEach(function(s){
       if(s.w.indexOf(currentWeek)>=0) activeCount++;
     });
   });
+  function r1(x){ return Math.round(x*10)/10; } // 规避浮点求和误差
+  var parts = [];
+  FIXED_ATTRS.forEach(function(a){ parts.push(a+' <b>'+r1(byAttr[a]||0)+'</b>'); });
+  if(byAttr['其他']) parts.push('其他 <b>'+r1(byAttr['其他'])+'</b>');
   document.getElementById('stats').innerHTML =
-    '已选 <b>'+ids.length+'</b> 门 · <b>'+totalCredit+'</b> 学分 · 本周 <b>'+activeCount+'</b> 个课时段';
+    '已选 <b>'+ids.length+'</b> 门 · 总学分 <b>'+r1(totalCredit)+'</b>'
+    + (ids.length ? '（'+parts.join(' · ')+'）' : '')
+    + ' · 本周 <b>'+activeCount+'</b> 个课时段';
 }
 
 // ===== 课表表格 =====
@@ -590,7 +676,7 @@ function renderSchedule(){
         // 单课独占：保持原有整块显示
         var ws = cluster.items[0];
         html += '<td class="slot" rowspan="'+span+'">'
-          + '<div class="cell-block" title="'+blockTip(ws)+'" oncontextmenu="showCtxMenu(event,'+ws.course.id+');return false" style="background:'+ws.course._color+'">'
+          + '<div class="cell-block'+(favorites[ws.course.id]?' fav':'')+'" title="'+blockTip(ws)+'" oncontextmenu="showCtxMenu(event,'+ws.course.id+');return false" style="background:'+ws.course._color+'">'
           + '<div class="cn">'+esc(ws.course.name)+'</div>'
           + '<div class="extra">'+blockExtra(ws)+'</div>'
           + '</div></td>';
@@ -605,7 +691,7 @@ function renderSchedule(){
           var topPct = ((ws.s - cluster.s) / span) * 100;
           var hPct = ((ws.e - ws.s + 1) / span) * 100;
           var leftPct = (laneArr.lane[idx] * laneW).toFixed(2);
-          inner += '<div class="cell-block overlap" title="'+blockTip(ws)+'" oncontextmenu="showCtxMenu(event,'+ws.course.id+');return false" style="'
+          inner += '<div class="cell-block overlap'+(favorites[ws.course.id]?' fav':'')+'" title="'+blockTip(ws)+'" oncontextmenu="showCtxMenu(event,'+ws.course.id+');return false" style="'
             + 'background:'+hexA(ws.course._color, .82)+';'
             + 'border:1px solid '+ws.course._color+';'
             + 'top:'+topPct.toFixed(2)+'%;height:'+hPct.toFixed(2)+'%;'
@@ -713,6 +799,7 @@ function showCtxMenu(e, courseId){
   ctxCourseId = courseId;
   var c = findCourse(courseId);
   document.getElementById('ctxTitle').textContent = c ? c.name : '';
+  document.getElementById('ctxFavItem').textContent = favorites[courseId] ? '☆ 取消收藏' : '★ 收藏偏好';
   var menu = document.getElementById('ctxMenu');
   menu.classList.add('show');
   // 定位到鼠标处，超出视口时向内收
@@ -733,6 +820,11 @@ function ctxCopyCode(){
     copyText(c.code);
     showToast('已复制：'+c.code);
   }
+  hideCtxMenu();
+}
+
+function ctxToggleFav(){
+  if(ctxCourseId != null) toggleFavorite(ctxCourseId);
   hideCtxMenu();
 }
 
