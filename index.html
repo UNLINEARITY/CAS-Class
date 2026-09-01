@@ -54,6 +54,7 @@ body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:var(--bg)
 .tag-credit{background:#fff7e6;color:#d48806}
 .tag-exam{background:#f9f0ff;color:#722ed1}
 .tag-teacher{background:#e6fffb;color:#08979c}
+.tag-hours{background:#f0f0f0;color:#595959}
 .sess-line{color:#555;line-height:1.5}
 /* Selected */
 .sel-item{padding:8px 12px;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -177,6 +178,11 @@ td.slot.conflict-cell{background:#fff2f0}
           <select id="filterExam" onchange="doSearch()">
             <option value="">全部考核</option>
           </select>
+          <select id="filterConflict" onchange="doSearch()">
+            <option value="">冲突状态</option>
+            <option value="no">无冲突</option>
+            <option value="yes">有冲突</option>
+          </select>
           <button class="btn btn-sm" onclick="resetFilters()">重置</button>
         </div>
         <div style="font-size:11px;color:var(--muted);margin-bottom:6px" id="resultCount"></div>
@@ -221,6 +227,16 @@ td.slot.conflict-cell{background:#fff2f0}
         <table class="schedule" id="scheduleTable"></table>
       </div>
     </div>
+
+    <!-- 备选课程 -->
+    <div class="card">
+      <div class="card-header"><span id="candidateHead">备选课程</span></div>
+      <div class="card-body" style="padding:0">
+        <div id="candidateList">
+          <div style="padding:16px;color:var(--muted);text-align:center;font-size:13px">尚未添加备选课程</div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -241,6 +257,7 @@ td.slot.conflict-cell{background:#fff2f0}
 <div class="ctx-menu" id="ctxMenu">
   <div class="ctx-title" id="ctxTitle"></div>
   <div class="ctx-item" onclick="ctxCopyCode()">📋 复制课程代码</div>
+  <div class="ctx-item" id="ctxSwitchItem" onclick="ctxSwitchKind()">转为备选</div>
   <div class="ctx-item" id="ctxFavItem" onclick="ctxToggleFav()">★ 收藏偏好</div>
   <div class="ctx-item danger" onclick="ctxRemove()">✕ 移除该课程</div>
 </div>
@@ -346,6 +363,81 @@ function toggleFavorite(id){
   renderSelected();
 }
 
+// ===== 备选课程 =====
+// 备选与已选互斥：同一门课只存在于其中一个集合；备选允许与任何课程时间冲突
+var CAND_KEY = 'cas-class-candidates-v1';
+var candidates = {};   // id -> course
+
+function saveCandidates(){
+  try{
+    localStorage.setItem(CAND_KEY, JSON.stringify(Object.keys(candidates).map(Number)));
+  }catch(e){}
+}
+
+function loadCandidates(){
+  try{
+    var saved = JSON.parse(localStorage.getItem(CAND_KEY) || '[]');
+    if(!Array.isArray(saved)) return;
+    candidates = {};
+    saved.forEach(function(rawId){
+      var id = Number(rawId);
+      if(!isFinite(id)) return;
+      var c = findCourse(id);
+      if(c) candidates[id] = c;
+    });
+  }catch(e){}
+}
+
+function addCandidate(id){
+  if(selected[id] || candidates[id]) return; // 已选或已备选，忽略
+  var c = findCourse(id);
+  if(!c) return;
+  candidates[id] = c;
+  saveCandidates();
+  doSearch();
+  renderCandidates();
+  renderSchedule();
+}
+
+function removeCandidate(id){
+  if(!candidates[id]) return;
+  delete candidates[id];
+  saveCandidates();
+  doSearch();
+  renderCandidates();
+  renderSchedule();
+}
+
+// 备选转已选：无冲突直接转正；有冲突时经确认后再移出备选，取消则保留在备选
+var pendingPromoteId = null;
+
+function promoteCandidate(id){
+  if(!candidates[id] || selected[id]) return;
+  var c = findCourse(id);
+  if(!c) return;
+  var conflicts = checkConflicts(c, selected);
+  if(conflicts.length){
+    pendingPromoteId = id;
+    showConflictModal(c, conflicts);
+    return;
+  }
+  finishPromote(id);
+}
+
+function finishPromote(id){
+  delete candidates[id];
+  saveCandidates();
+  doAdd(id);
+}
+
+function demoteToCandidate(id){
+  if(!selected[id] || candidates[id]) return;
+  delete selected[id];
+  saveSelection();
+  addCandidate(id);
+  renderSelected();
+}
+
 // ===== 初始化 =====
 function init(){
   // 填充筛选器
@@ -382,7 +474,10 @@ function init(){
 
   loadSelection();
   loadFavorites();
+  loadCandidates();
+
   renderSelected();
+  renderCandidates();
   doSearch();
   renderSchedule();
 }
@@ -404,6 +499,7 @@ function doSearch(){
   var level = document.getElementById('filterLevel').value;
   var credit = document.getElementById('filterCredit').value;
   var exam = document.getElementById('filterExam').value;
+  var conflict = document.getElementById('filterConflict').value;
   var results = [];
   for(var i=0; i<COURSES.length; i++){
     var c = COURSES[i];
@@ -412,6 +508,11 @@ function doSearch(){
     if(level && c.level!==level) continue;
     if(credit && c.credits !== Number(credit)) continue;
     if(exam && c.exam!==exam) continue;
+    if(conflict){
+      var cnt = selected[c.id] ? 0 : checkConflicts(c, selected).length;
+      if(conflict === 'yes' && cnt === 0) continue;
+      if(conflict === 'no' && cnt > 0) continue;
+    }
     if(kw){
       var name = (c.name||'').toLowerCase();
       var code = (c.code||'').toLowerCase();
@@ -432,6 +533,7 @@ function resetFilters(){
   document.getElementById('filterLevel').value='';
   document.getElementById('filterCredit').value='';
   document.getElementById('filterExam').value='';
+  document.getElementById('filterConflict').value='';
   doSearch();
 }
 
@@ -457,7 +559,10 @@ function renderList(results){
       +   '</div>'
       +   '<div class="meta sess-line">'+courseSessionsDesc(c)+'</div>'
       + '</div>'
-      + '<button class="'+btnCls+'" onclick="addCourse('+c.id+')">'+btnTxt+'</button>'
+      + '<div style="display:flex;gap:4px;flex-shrink:0">'
+      +   (selected[c.id] ? '' : '<button class="btn btn-sm" onclick="'+(candidates[c.id]?'removeCandidate':'addCandidate')+'('+c.id+')">'+(candidates[c.id]?'取消备选':'备选')+'</button>')
+      +   '<button class="'+btnCls+'" onclick="addCourse('+c.id+')">'+btnTxt+'</button>'
+      + '</div>'
       + '</div>';
   });
   if(!results.length){
@@ -493,8 +598,13 @@ function doAdd(id){
 }
 
 function confirmConflictAdd(){
-  if(pendingConflictId != null) doAdd(pendingConflictId);
+  if(pendingConflictId != null){
+    doAdd(pendingConflictId);
+  }else if(pendingPromoteId != null){
+    finishPromote(pendingPromoteId);
+  }
   pendingConflictId = null;
+  pendingPromoteId = null;
   closeModal();
 }
 
@@ -523,6 +633,7 @@ function exportSelection(){
     app: 'cas-class',
     version: 2,
     selected: ids.sort(function(a,b){ return a-b; }).map(function(id){ return selected[id].code; }),
+    candidates: Object.keys(candidates).map(Number).sort(function(a,b){ return a-b; }).map(function(id){ return candidates[id].code; }),
     favorites: Object.keys(favorites).map(Number).filter(function(id){ return selected[id]; }).sort(function(a,b){ return a-b; }).map(function(id){ return selected[id].code; })
   };
   var blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
@@ -598,12 +709,23 @@ function applyImport(data){
     var c = resolveImportKey(key);
     if(c) favorites[c.id] = 1;
   });
+  candidates = {};
+  var candImported = 0;
+  (Array.isArray(data.candidates) ? data.candidates : []).forEach(function(key){
+    var c = resolveImportKey(key);
+    if(!c){ skipped++; return; }
+    if(selected[c.id] || candidates[c.id]){ skipped++; return; }
+    candidates[c.id] = c;
+    candImported++;
+  });
   saveSelection();
+  saveCandidates();
   saveFavorites();
   doSearch();
   renderSelected();
+  renderCandidates();
   renderSchedule();
-  showToast('导入成功：' + imported + ' 门课程' + (skipped ? '（' + skipped + ' 门跳过）' : ''));
+  showToast('导入成功：' + imported + ' 门课程' + (candImported ? '、' + candImported + ' 门备选' : '') + (skipped ? '（' + skipped + ' 门跳过）' : ''));
 }
 
 function findCourse(id){
@@ -668,11 +790,52 @@ function renderSelected(){
       +   '<div class="meta">'
       +     '<span class="tag tag-attr">'+esc(c.attr||'')+'</span>'
       +     (c.credits!=null?'<span class="tag tag-credit">'+c.credits+'学分</span>':'')
+      +     (c.hours?'<span class="tag tag-hours">'+c.hours+'学时</span>':'')
       +     (c.exam?'<span class="tag tag-exam">'+esc(c.exam)+'</span>':'')
       +   '</div>'
       +   '<div class="meta sess-line">'+courseSessionsDesc(c)+'</div>'
       + '</div>'
       + '<button class="btn btn-sm btn-danger" onclick="removeCourse('+id+')">移除</button>'
+      + '</div>';
+  });
+  el.innerHTML = html;
+  updateStats();
+}
+
+// ===== 备选课程列表 =====
+function renderCandidates(){
+  var el = document.getElementById('candidateList');
+  var head = document.getElementById('candidateHead');
+  var ids = Object.keys(candidates);
+  var totalCredit = 0;
+  ids.forEach(function(id){
+    var c = candidates[id];
+    if(c.credits) totalCredit += c.credits;
+  });
+  head.textContent = '备选课程（' + ids.length + '）· 共 ' + (Math.round(totalCredit*10)/10) + ' 学分';
+  if(!ids.length){
+    el.innerHTML = '<div style="padding:16px;color:var(--muted);text-align:center;font-size:13px">尚未添加备选课程</div>';
+    return;
+  }
+  var html = '';
+  ids.forEach(function(id){
+    var c = candidates[id];
+    html += '<div class="sel-item">'
+      + '<div class="color-dot" style="background:'+courseColor(c)+';opacity:.55"></div>'
+      + '<div class="info">'
+      +   '<div class="name">备· '+esc(c.name)+'</div>'
+      +   '<div class="meta">'
+      +     '<span class="tag tag-attr">'+esc(c.attr||'')+'</span>'
+      +     (c.credits!=null?'<span class="tag tag-credit">'+c.credits+'学分</span>':'')
+      +     (c.hours?'<span class="tag tag-hours">'+c.hours+'学时</span>':'')
+      +     (c.exam?'<span class="tag tag-exam">'+esc(c.exam)+'</span>':'')
+      +   '</div>'
+      +   '<div class="meta sess-line">'+courseSessionsDesc(c)+'</div>'
+      + '</div>'
+      + '<div style="display:flex;gap:4px;flex-shrink:0">'
+      +   '<button class="btn btn-sm" onclick="promoteCandidate('+id+')">转为已选</button>'
+      +   '<button class="btn btn-sm btn-danger" onclick="removeCandidate('+id+')">移除</button>'
+      + '</div>'
       + '</div>';
   });
   el.innerHTML = html;
@@ -728,15 +891,19 @@ function renderLegend(attrSet){
 // renderSchedule 负责构建整个表格（含表头）：无冲突的课程用 rowspan 覆盖连续节次；
 // 同一天内节次相交的课程归为一簇，整簇占一个 rowspan 单元格，簇内各课程块半透明重叠显示
 function renderSchedule(){
-  // 1. 收集本周所有 session（一门课可能多个时段，每个 session 独立处理）
+  // 1. 收集本周所有 session（一门课可能多个时段，每个 session 独立处理；含备选）
   var weekSess = [];
-  for(var id in selected){
-    var c = selected[id];
-    c.sessions.forEach(function(s){
-      if(s.w.indexOf(currentWeek) < 0) return; // 不在本周
-      weekSess.push({d:s.d, s:s.s, e:s.e, course:c, session:s});
-    });
+  function collectSessions(map, kind){
+    for(var id in map){
+      var c = map[id];
+      c.sessions.forEach(function(s){
+        if(s.w.indexOf(currentWeek) < 0) return; // 不在本周
+        weekSess.push({d:s.d, s:s.s, e:s.e, course:c, session:s, kind:kind});
+      });
+    }
   }
+  collectSessions(selected, 'sel');
+  collectSessions(candidates, 'cand');
 
   // 2. 按天聚类：节次区间相交（传递闭包）的 session 归为一簇
   var clustersByDay = {};
@@ -789,35 +956,41 @@ function renderSchedule(){
       for(var pp=p+1; pp<=cluster.e; pp++) skip[d][pp] = true;
 
       if(cluster.items.length === 1){
-        // 单课独占：保持原有整块显示
+        // 单课独占：整块显示（备选课程用半透明虚线样式）
         var ws = cluster.items[0];
+        var isCand = ws.kind === 'cand';
         html += '<td class="slot" rowspan="'+span+'">'
-          + '<div class="cell-block'+(favorites[ws.course.id]?' fav':'')+'" title="'+blockTip(ws)+'" oncontextmenu="showCtxMenu(event,'+ws.course.id+');return false" style="background:'+courseColor(ws.course)+'">'
-          + '<div class="cn">'+esc(ws.course.name)+'</div>'
+          + '<div class="cell-block'+(isCand?' cand':'')+(favorites[ws.course.id]?' fav':'')+'" title="'+(isCand?'[备选] ':'')+blockTip(ws)+'" oncontextmenu="showCtxMenu(event,'+ws.course.id+',\''+ws.kind+'\');return false" style="background:'+(isCand?hexA(courseColor(ws.course),.45):courseColor(ws.course))+(isCand?';border:2px dashed '+courseColor(ws.course):'')+'">'
+          + '<div class="cn">'+(isCand?'备· ':'')+esc(ws.course.name)+'</div>'
           + '<div class="extra">'+blockExtra(ws)+'</div>'
           + '</div></td>';
       } else {
-        // 冲突簇：整簇一个 rowspan 单元格，各课程块半透明重叠、按车道并排错位
+        // 同簇多课：整簇一个 rowspan 单元格，各课程块按车道并排错位；
+        // 备选块更透明加虚线边框；仅当已选课程之间重叠才计入冲突 banner
         var laneArr = assignLanes(cluster.items);
         var laneW = 100 / laneArr.max;
-        var names = {};
         var inner = '';
+        var selCnt = 0;
+        var selNames = {};
         cluster.items.forEach(function(ws, idx){
-          names[ws.course.name] = 1;
+          if(ws.kind === 'sel'){ selCnt++; selNames[ws.course.name] = 1; }
+          var isCand = ws.kind === 'cand';
           var topPct = ((ws.s - cluster.s) / span) * 100;
           var hPct = ((ws.e - ws.s + 1) / span) * 100;
           var leftPct = (laneArr.lane[idx] * laneW).toFixed(2);
-          inner += '<div class="cell-block overlap'+(favorites[ws.course.id]?' fav':'')+'" title="'+blockTip(ws)+'" oncontextmenu="showCtxMenu(event,'+ws.course.id+');return false" style="'
-            + 'background:'+hexA(courseColor(ws.course), .82)+';'
-            + 'border:1px solid '+courseColor(ws.course)+';'
+          inner += '<div class="cell-block overlap'+(isCand?' cand':'')+(favorites[ws.course.id]?' fav':'')+'" title="'+(isCand?'[备选] ':'')+blockTip(ws)+'" oncontextmenu="showCtxMenu(event,'+ws.course.id+',\''+ws.kind+'\');return false" style="'
+            + 'background:'+hexA(courseColor(ws.course), isCand ? .45 : .82)+';'
+            + 'border:'+(isCand?'2px dashed':'1px solid')+' '+courseColor(ws.course)+';'
             + 'top:'+topPct.toFixed(2)+'%;height:'+hPct.toFixed(2)+'%;'
             + 'left:'+leftPct+'%;width:'+laneW.toFixed(2)+'%">'
-            + '<div class="cn">'+esc(ws.course.name)+'</div>'
+            + '<div class="cn">'+(isCand?'备· ':'')+esc(ws.course.name)+'</div>'
             + '<div class="extra">'+blockExtra(ws)+'</div>'
             + '</div>';
         });
-        weekConflictNames[Object.keys(names).join(' / ')] = 1;
-        html += '<td class="slot conflict-cell" rowspan="'+span+'"'
+        if(selCnt >= 2){
+          weekConflictNames[Object.keys(selNames).join(' / ')] = 1;
+        }
+        html += '<td class="slot'+(selCnt >= 2?' conflict-cell':'')+'" rowspan="'+span+'"'
           + ' style="position:relative;height:'+(span*ROW_H)+'px">'
           + inner + '</td>';
       }
@@ -904,17 +1077,21 @@ function showConflictModal(course, conflicts){
 function closeModal(){
   document.getElementById('conflictModal').classList.remove('show');
   pendingConflictId = null; // 取消时清除待添加课程
+  pendingPromoteId = null;  // 取消时清除待转正课程，课程保留在备选
 }
 
 // ===== 右键菜单 =====
 var ctxCourseId = null;
+var ctxKind = 'sel';
 
-function showCtxMenu(e, courseId){
+function showCtxMenu(e, courseId, kind){
   e.preventDefault();
   e.stopPropagation();
   ctxCourseId = courseId;
+  ctxKind = kind || (candidates[courseId] ? 'cand' : 'sel');
   var c = findCourse(courseId);
   document.getElementById('ctxTitle').textContent = c ? c.name : '';
+  document.getElementById('ctxSwitchItem').textContent = ctxKind === 'cand' ? '转为已选' : '转为备选';
   document.getElementById('ctxFavItem').textContent = favorites[courseId] ? '☆ 取消收藏' : '★ 收藏偏好';
   var menu = document.getElementById('ctxMenu');
   menu.classList.add('show');
@@ -944,8 +1121,20 @@ function ctxToggleFav(){
   hideCtxMenu();
 }
 
+function ctxSwitchKind(){
+  if(ctxCourseId == null) return;
+  if(ctxKind === 'cand'){
+    promoteCandidate(ctxCourseId);
+  }else{
+    demoteToCandidate(ctxCourseId);
+  }
+  hideCtxMenu();
+}
+
 function ctxRemove(){
-  if(ctxCourseId != null) removeCourse(ctxCourseId);
+  if(ctxCourseId == null) return;
+  if(ctxKind === 'cand') removeCandidate(ctxCourseId);
+  else removeCourse(ctxCourseId);
   hideCtxMenu();
 }
 
@@ -1023,11 +1212,12 @@ function courseTeachers(c){
   return list.join('/');
 }
 
-// 课表课程块的信息行：教师 · 教室 / 节次 · 考核方式
+// 课表课程块的信息行：教师 · 教室 / 节次 · 学时 · 考核方式
 function blockExtra(ws){
   return esc(ws.session.teacher||'')
     + (ws.session.room?' · '+esc(ws.session.room):'')
     + '<br>第'+ws.s+'-'+ws.e+'节'
+    + (ws.course.hours?' · '+ws.course.hours+'学时':'')
     + (ws.course.exam?' · '+esc(ws.course.exam):'');
 }
 
@@ -1038,6 +1228,7 @@ function blockTip(ws){
   if(ws.session.teacher) parts.push(ws.session.teacher);
   if(ws.session.room) parts.push(ws.session.room);
   parts.push('第'+ws.s+'-'+ws.e+'节');
+  if(ws.course.hours) parts.push(ws.course.hours+'学时');
   return esc(parts.join(' · '));
 }
 
