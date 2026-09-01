@@ -187,9 +187,14 @@ td.slot.conflict-cell{background:#fff2f0}
     <div class="card">
       <div class="card-header">
         <span>已选课程</span>
-        <button class="btn btn-sm btn-danger" onclick="clearAll()">清空</button>
+        <div style="display:flex;gap:4px">
+          <button class="btn btn-sm" onclick="exportSelection()">导出</button>
+          <button class="btn btn-sm" onclick="document.getElementById('importFile').click()">导入</button>
+          <button class="btn btn-sm btn-danger" onclick="clearAll()">清空</button>
+        </div>
       </div>
       <div class="card-body" style="padding:0">
+        <input type="file" id="importFile" accept=".json,application/json" style="display:none" onchange="importSelection(this)">
         <div id="selectedList">
           <div style="padding:16px;color:var(--muted);text-align:center;font-size:13px">尚未选择任何课程</div>
         </div>
@@ -505,6 +510,101 @@ function clearAll(){
   doSearch();
   renderSelected();
   renderSchedule();
+}
+
+// ===== 导出与导入 =====
+// 导出当前选课方案（含收藏）为 JSON 文件
+function exportSelection(){
+  var ids = Object.keys(selected).map(Number);
+  if(!ids.length){ showToast('尚未选择任何课程'); return; }
+  var data = {
+    app: 'cas-class',
+    version: 2,
+    selected: ids.sort(function(a,b){ return a-b; }).map(function(id){ return selected[id].code; }),
+    favorites: Object.keys(favorites).map(Number).filter(function(id){ return selected[id]; }).sort(function(a,b){ return a-b; }).map(function(id){ return selected[id].code; })
+  };
+  var blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  var d = new Date();
+  var pad = function(n){ return (n<10?'0':'')+n; };
+  a.download = '选课方案-' + d.getFullYear() + pad(d.getMonth()+1) + pad(d.getDate()) + '.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(a.href);
+  showToast('已导出 ' + ids.length + ' 门课程');
+}
+
+// 解析并校验导入内容，格式不符时抛出异常
+function parseImport(text){
+  var data = JSON.parse(text);
+  if(!data || data.app !== 'cas-class' || (data.version !== 1 && data.version !== 2) || !Array.isArray(data.selected)){
+    throw new Error('format');
+  }
+  return data;
+}
+
+// 课程代号 -> 课程 映射（代号唯一，作为方案文件的稳定标识）
+var CODE_MAP = null;
+function codeMap(){
+  if(!CODE_MAP){
+    CODE_MAP = {};
+    COURSES.forEach(function(c){ CODE_MAP[c.code] = c; });
+  }
+  return CODE_MAP;
+}
+
+// 导入键解析：v2 为课程代号字符串，v1 为内部数字 id
+function resolveImportKey(key){
+  if(typeof key === 'string'){
+    var byCode = codeMap()[key];
+    if(byCode) return byCode;
+    key = Number(key);
+  }
+  if(typeof key === 'number' && isFinite(key)) return findCourse(key);
+  return null;
+}
+
+function importSelection(input){
+  var file = input.files && input.files[0];
+  input.value = ''; // 允许重复选择同一文件
+  if(!file) return;
+  var reader = new FileReader();
+  reader.onload = function(){
+    try{
+      applyImport(parseImport(reader.result));
+    }catch(e){
+      showToast('导入失败：文件格式不正确');
+    }
+  };
+  reader.readAsText(file, 'utf-8');
+}
+
+// 覆盖式应用导入的方案：无效 ID 跳过，方案内冲突课程直接以重叠样式呈现
+function applyImport(data){
+  selected = {};
+  colorIdx = 0;
+  var imported = 0, skipped = 0;
+  data.selected.forEach(function(key){
+    var c = resolveImportKey(key);
+    if(!c){ skipped++; return; }
+    if(selected[c.id]){ skipped++; return; } // 重复代号计入跳过
+    c._color = COLORS[colorIdx % COLORS.length];
+    colorIdx++;
+    selected[c.id] = c;
+    imported++;
+  });
+  (Array.isArray(data.favorites) ? data.favorites : []).forEach(function(key){
+    var c = resolveImportKey(key);
+    if(c) favorites[c.id] = 1;
+  });
+  saveSelection();
+  saveFavorites();
+  doSearch();
+  renderSelected();
+  renderSchedule();
+  showToast('导入成功：' + imported + ' 门课程' + (skipped ? '（' + skipped + ' 门跳过）' : ''));
 }
 
 function findCourse(id){
